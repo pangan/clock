@@ -42,8 +42,8 @@ TFT.          ESP32
 #define TFT_SCK  4   // SCK on TFT
 
 // ---------- WIFI ----------
-const char ssid[] = "Pnet-UK-mini-01";
-const char pass[] = "135721mh";
+//const char ssid[] = "Pnet-UK-mini-01";
+//const char pass[] = "135721mh";
 String formatted_date = "2000-01-01";
 String formatted_time = "00:00:00";
 String old_formatted_time = "00:00:00";
@@ -73,7 +73,79 @@ time_t getNtpTime();
 void sendNTPpacket(IPAddress &address);
 
 
+void drawWifiSignal(int16_t x, int16_t y, int8_t bars, uint16_t activeColor, uint16_t inactiveColor);
+void updateWifiIndicator();
 
+
+/**
+ * @brief Draws a WiFi signal indicator with 4 vertical bars.
+ * 
+ * @param x Top-left x coordinate of the indicator's bounding box.
+ * @param y Top-left y coordinate of the indicator's bounding box.
+ * @param bars Number of active bars to show (0-4).
+ * @param activeColor Color for the active bars (e.g., ST77XX_WHITE).
+ * @param inactiveColor Color for the inactive bars (e.g., a dark gray).
+ */
+
+void drawWifiSignal(int16_t x, int16_t y, int8_t bars, uint16_t activeColor, uint16_t inactiveColor) {
+    const int8_t bar_width = 2;
+    const int8_t bar_spacing = 1;
+    const int8_t max_bar_height = 8;
+
+    // Bar 1 (left-most, shortest)
+    int8_t h1 = max_bar_height / 4;
+    display.fillRect(x, y + max_bar_height - h1, bar_width, h1, (bars >= 1) ? activeColor : inactiveColor);
+
+    // Bar 2
+    int8_t h2 = max_bar_height / 2;
+    display.fillRect(x + bar_width + bar_spacing, y + max_bar_height - h2, bar_width, h2, (bars >= 2) ? activeColor : inactiveColor);
+
+    // Bar 3
+    int8_t h3 = max_bar_height * 3 / 4;
+    display.fillRect(x + 2 * (bar_width + bar_spacing), y + max_bar_height - h3, bar_width, h3, (bars >= 3) ? activeColor : inactiveColor);
+
+    // Bar 4 (right-most, tallest)
+    int8_t h4 = max_bar_height;
+    display.fillRect(x + 3 * (bar_width + bar_spacing), y + max_bar_height - h4, bar_width, h4, (bars >= 4) ? activeColor : inactiveColor);
+}
+
+
+/**
+ * @brief Gets WiFi signal strength, converts it to a number of bars, and draws the indicator.
+ *        Call this function repeatedly in your main loop().
+ */
+
+ 
+void updateWifiIndicator() {
+    static unsigned long last_update = 0;
+    if (millis() - last_update < 2000) return; // Update every 2 seconds
+    last_update = millis();
+
+    static int8_t last_bars = -1;
+    int8_t bars = 0;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        long rssi = WiFi.RSSI();
+        if (rssi >= -55) bars = 4;
+        else if (rssi >= -65) bars = 3;
+        else if (rssi >= -75) bars = 2;
+        else bars = 1;
+    }
+
+    if (bars != last_bars) {
+        const int16_t indicator_width = 11; // 4 * bar_width + 3 * bar_spacing
+        const int16_t indicator_height = 8; // max_bar_height
+        int16_t x = display.width() - indicator_width - 2;
+        int16_t y = 2;
+
+        if (bars == 0) {
+            display.fillRect(x, y, indicator_width, indicator_height, ST77XX_BLACK);
+        } else {
+            drawWifiSignal(x, y, bars, ST77XX_GREEN, 0x4208); // 0x4208 is a dark gray
+        }
+        last_bars = bars;
+    }
+}
 
 void showPartialUpdate(){
  if (old_formatted_time == formatted_time) return;
@@ -307,11 +379,15 @@ void setup() {
               String((uint8_t)(mac),        HEX);
   macString.toUpperCase();
 
-  String hostname = "CLOCK-" + macString;
+  String hostname = "clock_" + macString;
+  display.setTextColor(ST77XX_GREEN);
   display.println("Connect to");
-  display.print("  ");
+  display.println("  ");
+  display.setTextColor(ST77XX_YELLOW);
   display.println(hostname);
-  display.println("For seting!");
+  display.setTextColor(ST77XX_GREEN);
+  display.println("  ");
+  display.println("For setting!");
   hostname.replace(":", "");
   WiFi.setHostname(hostname.c_str());
   WiFiManager wm;
@@ -369,4 +445,5 @@ void loop() {
     delay(1000);
   }
   webSocket.loop();
+  updateWifiIndicator();
 }
