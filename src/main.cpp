@@ -31,6 +31,7 @@ TFT.          ESP32
 #include <TimeLib.h>
 #include <WiFiManager.h>
 #include <WebSocketsClient.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
 
 // ---------- TFT PINS ----------
@@ -42,15 +43,13 @@ TFT.          ESP32
 #define TFT_SCK  4   // SCK on TFT
 
 // ---------- WIFI ----------
-//const char ssid[] = "Pnet-UK-mini-01";
-//const char pass[] = "135721mh";
 String formatted_date = "2000-01-01";
 String formatted_time = "00:00:00";
 String old_formatted_time = "00:00:00";
 
 // ---------- NTP ----------
 static const char ntpServerName[] = "uk.pool.ntp.org";
-const int timeZone = 0;
+long g_utc_offset = 0; // Automatically detected offset in seconds
 
 WiFiUDP Udp;
 unsigned int localPort = 8888;
@@ -72,6 +71,39 @@ double last_gbp_sek = 0.0;
 time_t getNtpTime();
 void sendNTPpacket(IPAddress &address);
 
+/**
+ * @brief Fetches the current UTC offset (including Summer Time) from an online API 
+ * based on the device's public IP address. Uses ip-api.com for higher reliability.
+ */
+void updateTimezoneOffset() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(5000);
+  // ip-api.com provides the total offset from UTC in seconds, including DST adjustments.
+  http.begin(client, "http://ip-api.com/json/?fields=status,timezone,offset");
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (!error && doc["status"] == "success") {
+      long new_offset = doc["offset"]; // total seconds from UTC
+      
+      if (g_utc_offset != new_offset) {
+        g_utc_offset = new_offset;
+        Serial.printf("Timezone detected: %s. Total Offset: %ld seconds\n", (const char*)doc["timezone"], g_utc_offset);
+        // Force an immediate re-sync with the NTP server using the new offset
+        setSyncProvider(getNtpTime);
+      }
+    }
+  } else {
+    Serial.printf("Timezone detection failed: %s\n", http.errorToString(httpCode).c_str());
+  }
+  http.end();
+}
 
 void drawWifiSignal(int16_t x, int16_t y, int8_t bars, uint16_t activeColor, uint16_t inactiveColor);
 void updateWifiIndicator();
@@ -321,7 +353,7 @@ time_t getNtpTime() {
         (unsigned long)packetBuffer[42] << 8 |
         (unsigned long)packetBuffer[43];
 
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+      return secsSince1900 - 2208988800UL + g_utc_offset;
     }
   }
   return 0;
@@ -354,7 +386,9 @@ void setup() {
   delay(200);
 
   display.initR(INITR_BLACKTAB);   // try REDTAB if white
+  // display.initR(INITR_GREENTAB);   // try REDTAB if white
   display.setRotation(1);
+  // display.invertDisplay(true);
   display.fillScreen(ST77XX_BLACK);
   display.setTextSize(1);
   display.setTextColor(ST77XX_GREEN);
@@ -393,6 +427,7 @@ void setup() {
   WiFiManager wm;
   delay(50);
   wm.resetSettings();
+  delay(50);
   wm.setHostname(hostname.c_str());
   bool res = wm.autoConnect(hostname.c_str());
 
@@ -421,6 +456,10 @@ void setup() {
   display.setFont(&FreeSansBold9pt7b);
   display.setTextSize(1);
 
+  // ---------- DETECT TIMEZONE ----------
+  // Get the initial offset after connecting to WiFi
+  updateTimezoneOffset();
+
   // ---------- NTP ----------
   Udp.begin(localPort);
   setSyncProvider(getNtpTime);
@@ -440,6 +479,14 @@ void loop() {
                    String(minute() < 10 ? "0" : "") + String(minute()) + ":" +
                    String(second() < 10 ? "0" : "") + String(second());
   showPartialUpdate();
+
+  // Periodically check for timezone/DST changes (e.g., every 12 hours)
+  static unsigned long last_tz_check = 0;
+  if (millis() - last_tz_check > 12 * 3600 * 1000) {
+    updateTimezoneOffset();
+    last_tz_check = millis();
+  }
+
   if (formatted_date != String(year()) + "-" + String(month()) + "-" + String(day())) {
     header_text();
     delay(1000);
